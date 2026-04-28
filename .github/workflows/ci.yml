@@ -1,10 +1,10 @@
 name: CI
 
+# CI отвечает только за проверку pull request-ов перед merge.
+# Push в main/master уже обслуживается workflow `CD` (`deploy.yml`),
+# который сам прогоняет те же тесты перед деплоем — дублировать их в
+# отдельном CI-запуске нет смысла, это только удваивает GitHub minutes.
 on:
-  push:
-    branches:
-      - main
-      - master
   pull_request:
 
 jobs:

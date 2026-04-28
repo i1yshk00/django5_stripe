@@ -23,14 +23,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Poetry должен быть установлен ДО `actions/setup-python`, потому что
+      # `cache: poetry` ищет executable в PATH во время восстановления кеша.
+      # Если ставить poetry позже, шаг setup-python падает с
+      # `Unable to locate executable file: poetry`.
+      - name: Install Poetry
+        run: pipx install poetry==1.8.4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: poetry
-
-      - name: Install Poetry
-        run: python -m pip install --upgrade pip poetry==1.8.4
 
       - name: Install dependencies
         run: poetry install --no-interaction --no-root

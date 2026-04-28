@@ -270,16 +270,6 @@ cat ~/.ssh/github-deploy
 После этого каждый push в `main` будет автоматически выкатываться на
 сервер. Ручной деплой запускается через `Actions → CD → Run workflow`.
 
-### Откат к предыдущему коммиту
-
-```bash
-ssh root@46.173.17.207
-cd /opt/django5_stripe
-git log --oneline -10            # найти нужный SHA
-git reset --hard <SHA>
-docker compose -f docker-compose.yml up -d --build
-```
-
 ### Production-секреты
 
 Реальные значения `DJANGO_SECRET_KEY`, `STRIPE_*`, `POSTGRES_PASSWORD`

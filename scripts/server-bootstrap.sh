@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+#
+# Первоначальная настройка production-хоста под автодеплой django5_stripe.
+#
+# Запускается ОДИН РАЗ вручную на сервере (например, на 46.173.17.207):
+#
+#     ssh root@46.173.17.207
+#     curl -fsSL https://raw.githubusercontent.com/<owner>/<repo>/main/scripts/server-bootstrap.sh \
+#       | REPO_URL=https://github.com/<owner>/<repo>.git bash
+#
+# Скрипт идемпотентен: повторный запуск не сломает существующую установку,
+# а только обновит недостающие части.
+#
+# После выполнения сервер готов к автодеплоям: GitHub Actions подключится по
+# SSH, сделает `git pull` и пересоберет docker compose stack.
+
+set -euo pipefail
+
+# ──────────────────────────────────────────────────────────────────────────
+# Параметры — переопределяются переменными окружения перед запуском.
+# ──────────────────────────────────────────────────────────────────────────
+
+DEPLOY_PATH="${DEPLOY_PATH:-/opt/django5_stripe}"
+REPO_URL="${REPO_URL:-}"
+DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
+
+if [[ -z "$REPO_URL" ]]; then
+    echo "ERROR: переменная REPO_URL не задана."
+    echo "Пример запуска:"
+    echo "  REPO_URL=https://github.com/<owner>/<repo>.git bash server-bootstrap.sh"
+    exit 1
+fi
+
+echo "==> Bootstrap django5_stripe on $(hostname)"
+echo "    DEPLOY_PATH=$DEPLOY_PATH"
+echo "    REPO_URL=$REPO_URL"
+echo "    DEPLOY_BRANCH=$DEPLOY_BRANCH"
+echo
+
+# ──────────────────────────────────────────────────────────────────────────
+# 1. Базовые системные пакеты.
+# ──────────────────────────────────────────────────────────────────────────
+
+echo "==> Installing base packages (curl, git, ufw, ca-certificates)"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y --no-install-recommends \
+    curl git ca-certificates gnupg ufw >/dev/null
+
+# ──────────────────────────────────────────────────────────────────────────
+# 2. Docker Engine + Compose plugin (через официальный репозиторий Docker).
+# ──────────────────────────────────────────────────────────────────────────
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo "==> Installing Docker Engine"
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/debian/gpg \
+        | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+
+    . /etc/os-release
+    DISTRO="${ID:-debian}"
+    CODENAME="${VERSION_CODENAME:-bookworm}"
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.docker.com/linux/$DISTRO $CODENAME stable" \
+        > /etc/apt/sources.list.d/docker.list
+
+    apt-get update -qq
+    apt-get install -y --no-install-recommends \
+        docker-ce docker-ce-cli containerd.io \
+        docker-buildx-plugin docker-compose-plugin >/dev/null
+
+    systemctl enable --now docker
+else
+    echo "==> Docker уже установлен — пропускаем"
+fi
+
+# ──────────────────────────────────────────────────────────────────────────
+# 3. Firewall: открываем только 22, 80, 443 наружу.
+# ──────────────────────────────────────────────────────────────────────────
+
+echo "==> Configuring UFW firewall"
+ufw --force reset >/dev/null
+ufw default deny incoming >/dev/null
+ufw default allow outgoing >/dev/null
+ufw allow 22/tcp comment 'SSH' >/dev/null
+ufw allow 80/tcp comment 'HTTP' >/dev/null
+ufw allow 443/tcp comment 'HTTPS' >/dev/null
+ufw --force enable >/dev/null
+
+# ──────────────────────────────────────────────────────────────────────────
+# 4. Клонируем репозиторий или обновляем существующий клон.
+# ──────────────────────────────────────────────────────────────────────────
+
+mkdir -p "$DEPLOY_PATH"
+if [[ ! -d "$DEPLOY_PATH/.git" ]]; then
+    echo "==> Cloning $REPO_URL into $DEPLOY_PATH"
+    git clone --branch "$DEPLOY_BRANCH" "$REPO_URL" "$DEPLOY_PATH"
+else
+    echo "==> Repo already exists, fetching latest"
+    git -C "$DEPLOY_PATH" fetch --all --prune
+    git -C "$DEPLOY_PATH" reset --hard "origin/$DEPLOY_BRANCH"
+fi
+
+# ──────────────────────────────────────────────────────────────────────────
+# 5. Создаем `.env`-плейсхолдер, если его еще нет.
+#
+# Реальные значения секретов нужно проставить руками после bootstrap. Они
+# намеренно не пробрасываются через GitHub Actions, чтобы не утекли в логи.
+# ──────────────────────────────────────────────────────────────────────────
+
+ENV_FILE="$DEPLOY_PATH/.env"
+if [[ ! -f "$ENV_FILE" ]]; then
+    echo "==> Creating placeholder .env at $ENV_FILE"
+    cat >"$ENV_FILE" <<'ENV_EOF'
+# Production env file — заполните реальными значениями перед первым деплоем.
+DJANGO_ENV=prod
+DJANGO_SECRET_KEY=PLEASE_CHANGE_TO_LONG_RANDOM_STRING
+DJANGO_DEBUG=False
+DJANGO_ALLOWED_HOSTS_PROD=your-domain.example,46.173.17.207
+DJANGO_CSRF_TRUSTED_ORIGINS_PROD=https://your-domain.example
+DOMAIN_URL_PROD=https://your-domain.example
+
+POSTGRES_DB=django5_stripe
+POSTGRES_USER=django5_stripe
+POSTGRES_PASSWORD=PLEASE_CHANGE_TO_STRONG_PASSWORD
+
+STRIPE_SECRET_KEY=sk_live_or_test_REAL_KEY
+STRIPE_PUBLISHABLE_KEY=pk_live_or_test_REAL_KEY
+STRIPE_WEBHOOK_SECRET=whsec_REAL_WEBHOOK_SIGNING_SECRET
+STRIPE_API_VERSION=2026-02-25.clover
+ENV_EOF
+    chmod 600 "$ENV_FILE"
+    echo "    -> отредактируйте $ENV_FILE и проставьте реальные значения"
+else
+    echo "==> .env уже существует, оставляем как есть"
+fi
+
+# ──────────────────────────────────────────────────────────────────────────
+# 6. Поднимаем сервис в первый раз, чтобы убедиться, что compose работает.
+# ──────────────────────────────────────────────────────────────────────────
+
+echo "==> Building and starting docker compose stack"
+cd "$DEPLOY_PATH"
+docker compose -f docker-compose.yml up -d --build --remove-orphans
+
+echo
+echo "==> Bootstrap complete."
+echo "Дальнейшие шаги:"
+echo "  1. Отредактируйте $ENV_FILE и проставьте реальные секреты."
+echo "  2. Перезапустите контейнер: docker compose -f $DEPLOY_PATH/docker-compose.yml up -d"
+echo "  3. В GitHub repository → Settings → Secrets установите:"
+echo "       SSH_HOST=46.173.17.207"
+echo "       SSH_USER=root"
+echo "       SSH_PRIVATE_KEY=<содержимое ~/.ssh/id_ed25519 GitHub-deploy-ключа>"
+echo "       (опционально) DEPLOY_PATH=$DEPLOY_PATH"
+echo "  4. Push в main — workflow CD автоматически выкатит обновление."

@@ -1,0 +1,29 @@
+services:
+  web:
+    # Отдельный compose-файл для локальной разработки.
+    # Здесь включены bind mount, auto-reload и dev-настройки Django, чтобы
+    # проект был доступен на `http://localhost:8000` без reverse proxy и TLS.
+    build: .
+    command: uvicorn django5_stripe.asgi:application --host 0.0.0.0 --port 8000 --reload
+    init: true
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    environment:
+      # Dev-режим отключает принудительный HTTPS-редирект и HSTS, поэтому
+      # браузер может работать с локальным контейнером по обычному HTTP.
+      DJANGO_ENV: dev
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-django-insecure-local-dev-only-change-me}
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-True}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1,0.0.0.0}
+      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
+      DJANGO_USE_POSTGRES: ${DJANGO_USE_POSTGRES:-False}
+      DJANGO_LOG_LEVEL: ${DJANGO_LOG_LEVEL:-DEBUG}
+      DJANGO_RUN_MIGRATIONS_ON_STARTUP: ${DJANGO_RUN_MIGRATIONS_ON_STARTUP:-true}
+      DJANGO_COLLECTSTATIC_ON_STARTUP: ${DJANGO_COLLECTSTATIC_ON_STARTUP:-false}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-sk_test_change_me}
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-pk_test_change_me}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-whsec_change_me}
+      STRIPE_API_VERSION: ${STRIPE_API_VERSION:-2026-02-25.clover}
+      DOMAIN_URL: ${DOMAIN_URL:-http://localhost:8000}

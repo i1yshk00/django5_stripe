@@ -1,0 +1,73 @@
+services:
+  db:
+    # Production-like окружение теперь использует Postgres, чтобы контейнерный
+    # запуск был ближе к реальному деплою, чем SQLite-файл внутри web-контейнера.
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      # Базовые учетные данные Postgres. Их можно переопределить через `.env`,
+      # но дефолты оставлены, чтобы compose поднимался без лишних ручных шагов.
+      POSTGRES_DB: ${POSTGRES_DB:-django5_stripe}
+      POSTGRES_USER: ${POSTGRES_USER:-django5_stripe}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-django5_stripe}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # `pg_isready` — самый прямой способ дождаться готовности Postgres.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-django5_stripe} -d ${POSTGRES_DB:-django5_stripe}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    # Базовый compose-файл описывает production-like запуск контейнера.
+    # Он использует `prod`-настройки Django, Postgres и startup-entrypoint,
+    # который сам применяет миграции и собирает статику.
+    #
+    # `command:` намеренно не указан — берется production CMD из Dockerfile
+    # (`gunicorn -k uvicorn.workers.UvicornWorker -w 3 …`). Чистый uvicorn
+    # без worker manager не подходит для production, поэтому переопределение
+    # на uvicorn здесь убрано. Dev-режим переопределяет команду в
+    # `docker-compose.dev.yml` на `uvicorn --reload` для hot reload.
+    build: .
+    init: true
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    healthcheck:
+      # Проверяем именно прикладной `/health/`, а не только факт прослушивания порта.
+      # В `prod` Django принудительно считает HTTPS обязательным, поэтому для
+      # внутреннего healthcheck явно пробрасываем `X-Forwarded-Proto: https`.
+      test: ["CMD", "python", "-c", "from urllib.request import Request, urlopen; req = Request('http://127.0.0.1:8000/health/', headers={'X-Forwarded-Proto': 'https'}); urlopen(req).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    environment:
+      # В production-like режиме активируем `prod.py`. Этот профиль предполагает,
+      # что перед приложением стоит reverse proxy, который завершает HTTPS.
+      DJANGO_ENV: prod
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-django-insecure-local-dev-only-change-me}
+      DJANGO_DEBUG: "False"
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS_PROD:-localhost,127.0.0.1,0.0.0.0}
+      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS_PROD:-https://localhost:8000,https://127.0.0.1:8000}
+      DJANGO_USE_POSTGRES: "true"
+      DJANGO_DB_CONN_MAX_AGE: ${DJANGO_DB_CONN_MAX_AGE:-60}
+      DJANGO_LOG_LEVEL: ${DJANGO_LOG_LEVEL:-INFO}
+      DJANGO_RUN_MIGRATIONS_ON_STARTUP: ${DJANGO_RUN_MIGRATIONS_ON_STARTUP:-true}
+      DJANGO_COLLECTSTATIC_ON_STARTUP: ${DJANGO_COLLECTSTATIC_ON_STARTUP:-true}
+      POSTGRES_DB: ${POSTGRES_DB:-django5_stripe}
+      POSTGRES_USER: ${POSTGRES_USER:-django5_stripe}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-django5_stripe}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-sk_test_change_me}
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-pk_test_change_me}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-whsec_change_me}
+      STRIPE_API_VERSION: ${STRIPE_API_VERSION:-2026-02-25.clover}
+      DOMAIN_URL: ${DOMAIN_URL_PROD:-https://localhost:8000}
+
+volumes:
+  postgres_data:

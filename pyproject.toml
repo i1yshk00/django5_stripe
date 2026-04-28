@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "django5-stripe"
+version = "0.1.0"
+description = ""
+authors = ["h1KkkaaH <sav1212121212@bk.ru>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+django = ">=5.2,<5.3"
+uvicorn = {extras = ["standard"], version = "^0.46.0"}
+gunicorn = "^23.0.0"
+stripe = {extras = ["async"], version = "^15.0.1"}
+django-unfold = "^0.90.0"
+whitenoise = "^6.12.0"
+psycopg = {extras = ["binary"], version = "^3.3.3"}
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

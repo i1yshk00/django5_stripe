@@ -1,0 +1,364 @@
+{% load static %}
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Заказ #{{ order.pk }} | Stripe Checkout</title>
+    <script src="https://js.stripe.com/v3/"></script>
+    <script src="{% static 'api/js/checkout.js' %}" defer></script>
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #0f172a;
+            --panel: #111827;
+            --panel-border: #1f2937;
+            --text: #e5e7eb;
+            --muted: #94a3b8;
+            --accent: #8b5cf6;
+            --accent-hover: #7c3aed;
+            --danger: #f87171;
+            --success: #34d399;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: linear-gradient(180deg, #0b1120 0%, var(--bg) 100%);
+            color: var(--text);
+        }
+
+        .page {
+            min-height: 100vh;
+            display: grid;
+            grid-template-columns: minmax(0, 1.35fr) minmax(320px, 440px);
+            gap: 32px;
+            padding: 48px;
+            align-items: start;
+        }
+
+        .eyebrow {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border: 1px solid rgba(139, 92, 246, 0.22);
+            border-radius: 999px;
+            color: #c4b5fd;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            background: rgba(139, 92, 246, 0.08);
+        }
+
+        h1 {
+            margin: 20px 0 16px;
+            font-size: clamp(34px, 5vw, 62px);
+            line-height: 1;
+            font-weight: 700;
+        }
+
+        .description {
+            margin: 0;
+            max-width: 760px;
+            color: var(--muted);
+            font-size: 18px;
+            line-height: 1.7;
+        }
+
+        .items-panel,
+        .summary-panel {
+            border: 1px solid var(--panel-border);
+            border-radius: 8px;
+            background: rgba(17, 24, 39, 0.94);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
+        }
+
+        .items-panel {
+            overflow: hidden;
+        }
+
+        .panel-header {
+            padding: 24px 24px 18px;
+            border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+        }
+
+        .panel-title {
+            margin: 0;
+            font-size: 20px;
+            font-weight: 600;
+        }
+
+        .panel-copy {
+            margin: 10px 0 0;
+            color: var(--muted);
+            line-height: 1.6;
+        }
+
+        .items-list {
+            display: grid;
+        }
+
+        .item-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto auto;
+            gap: 16px;
+            align-items: center;
+            padding: 20px 24px;
+            border-bottom: 1px solid rgba(148, 163, 184, 0.10);
+        }
+
+        .item-row:last-child {
+            border-bottom: none;
+        }
+
+        .item-name {
+            font-size: 17px;
+            font-weight: 600;
+        }
+
+        .item-description {
+            margin-top: 8px;
+            color: var(--muted);
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .item-qty,
+        .item-total {
+            white-space: nowrap;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .summary-panel {
+            padding: 28px;
+            position: sticky;
+            top: 32px;
+        }
+
+        .summary-grid {
+            display: grid;
+            gap: 16px;
+            margin-top: 20px;
+        }
+
+        .summary-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        .summary-row strong {
+            color: var(--text);
+            font-size: 15px;
+        }
+
+        .summary-row.total {
+            margin-top: 8px;
+            padding-top: 18px;
+            border-top: 1px solid rgba(148, 163, 184, 0.12);
+            color: var(--text);
+        }
+
+        .summary-row.total strong {
+            font-size: 18px;
+        }
+
+        .buy-button {
+            width: 100%;
+            min-height: 52px;
+            margin-top: 24px;
+            border: none;
+            border-radius: 8px;
+            padding: 14px 18px;
+            background: var(--accent);
+            color: white;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.15s ease, transform 0.15s ease;
+        }
+
+        .buy-button:hover:not(:disabled) {
+            background: var(--accent-hover);
+            transform: translateY(-1px);
+        }
+
+        .buy-button:disabled {
+            cursor: wait;
+            opacity: 0.75;
+        }
+
+        .secondary-link {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            min-height: 52px;
+            margin-top: 12px;
+            border: 1px solid rgba(139, 92, 246, 0.35);
+            border-radius: 8px;
+            padding: 14px 18px;
+            color: #ddd6fe;
+            text-decoration: none;
+            font-size: 16px;
+            font-weight: 600;
+            transition: border-color 0.15s ease, background-color 0.15s ease;
+            background: rgba(139, 92, 246, 0.08);
+        }
+
+        .secondary-link:hover {
+            border-color: rgba(139, 92, 246, 0.6);
+            background: rgba(139, 92, 246, 0.14);
+        }
+
+        .checkout-hint {
+            margin: 14px 0 0;
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .checkout-error {
+            min-height: 22px;
+            margin-top: 16px;
+            color: var(--danger);
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .checkout-error:empty {
+            display: none;
+        }
+
+        @media (max-width: 1100px) {
+            .page {
+                grid-template-columns: 1fr;
+                padding: 28px 20px 40px;
+            }
+
+            .summary-panel {
+                position: static;
+            }
+        }
+
+        @media (max-width: 720px) {
+            .item-row {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <main class="page">
+        <section>
+            <span class="eyebrow">Stripe Order Checkout</span>
+
+            <h1>Заказ #{{ order.pk }}</h1>
+
+            <p class="description">
+                На этой странице собраны все позиции заказа и итоговая сумма перед переходом на hosted Checkout-страницу Stripe.
+            </p>
+
+            <section class="items-panel" aria-labelledby="order-items-title">
+                <header class="panel-header">
+                    <h2 id="order-items-title" class="panel-title">Состав заказа</h2>
+                    <p class="panel-copy">
+                        Валюта заказа: {{ order.currency|upper }}. Режим оплаты: {{ order.get_checkout_mode_display }}.
+                    </p>
+                </header>
+
+                <div class="items-list">
+                    {% for order_item in order.order_items.all %}
+                        <article class="item-row">
+                            <div>
+                                <div class="item-name">{{ order_item.item_name }}</div>
+
+                                {% if order_item.item_description %}
+                                    <div class="item-description">{{ order_item.item_description }}</div>
+                                {% endif %}
+                            </div>
+
+                            <div class="item-qty">
+                                x{{ order_item.quantity }}
+                            </div>
+
+                            <div class="item-total">
+                                {{ order_item.line_subtotal }} {{ order_item.currency|upper }}
+                            </div>
+                        </article>
+                    {% empty %}
+                        <article class="item-row">
+                            <div class="item-description">
+                                Заказ пока не содержит ни одной позиции.
+                            </div>
+                        </article>
+                    {% endfor %}
+                </div>
+            </section>
+        </section>
+
+        <aside class="summary-panel" aria-label="Итоги заказа">
+            <h2 class="panel-title">Итоги оплаты</h2>
+
+            <p class="panel-copy">
+                Stripe получит все позиции заказа как отдельные line items. Если к заказу уже привязаны скидка или налог, они тоже будут переданы в Checkout.
+            </p>
+
+            <div class="summary-grid">
+                <div class="summary-row">
+                    <span>Сумма позиций</span>
+                    <strong>{{ order.subtotal_amount }} {{ order.currency|upper }}</strong>
+                </div>
+
+                <div class="summary-row">
+                    <span>Скидка</span>
+                    <strong>{{ order.discount_amount }} {{ order.currency|upper }}</strong>
+                </div>
+
+                <div class="summary-row">
+                    <span>Налог</span>
+                    <strong>{{ order.tax_amount }} {{ order.currency|upper }}</strong>
+                </div>
+
+                <div class="summary-row total">
+                    <span>Итого</span>
+                    <strong>{{ order.total_amount }} {{ order.currency|upper }}</strong>
+                </div>
+            </div>
+
+            <button
+                type="button"
+                class="buy-button"
+                data-checkout-button
+                data-buy-url="{{ buy_url }}"
+                data-publishable-key="{{ stripe_publishable_key }}"
+            >
+                Оплатить заказ через Stripe
+            </button>
+
+            <a
+                href="{{ payment_intent_page_url }}"
+                class="secondary-link"
+            >
+                Оплатить через Payment Intent
+            </a>
+
+            <p class="checkout-hint">
+                Endpoint оплаты: <code>{{ buy_url }}</code>
+            </p>
+
+            <div class="checkout-error" data-checkout-error role="alert"></div>
+        </aside>
+    </main>
+</body>
+</html>

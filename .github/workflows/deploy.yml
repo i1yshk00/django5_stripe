@@ -1,0 +1,128 @@
+name: CD
+
+# Триггеры деплоя:
+# - push в main: основной автоматический деплой;
+# - workflow_dispatch: ручной запуск из вкладки Actions, удобно для отладки и
+#   восстановления после неудачного автодеплоя.
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+# Предотвращаем гонку нескольких параллельных деплоев — на сервер должен
+# выкатываться ровно один коммит за раз. Старые in-flight деплои отменяются.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    # Дублирует основной CI workflow намеренно: defense in depth — даже если
+    # ветка попала в main мимо PR-проверок, прод не получит коммит без зеленых
+    # тестов. Дублирование стоит дешево, дает дополнительную гарантию.
+    runs-on: ubuntu-latest
+    env:
+      DJANGO_ENV: dev
+      DJANGO_SECRET_KEY: ci-secret-key
+      DJANGO_DEBUG: "False"
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1
+      STRIPE_SECRET_KEY: sk_test_dummy
+      STRIPE_PUBLISHABLE_KEY: pk_test_dummy
+      STRIPE_API_VERSION: 2026-02-25.clover
+      DOMAIN_URL: http://localhost:8000
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: poetry
+
+      - name: Install Poetry
+        run: python -m pip install --upgrade pip poetry==1.8.4
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+
+      - name: Django check
+        run: poetry run python manage.py check
+
+      - name: Run tests
+        run: poetry run python manage.py test
+
+  deploy:
+    needs: test
+    # На default-ветке только. workflow_dispatch триггер тоже сработает, но
+    # его GitHub запускает только из main по умолчанию.
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy on remote host via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          # Жесткие таймауты, чтобы залипший pull/build не держал GitHub runner
+          # часами — если за 15 минут не уложились, что-то идет не так.
+          timeout: 60s
+          command_timeout: 15m
+          # script_stop=true превращает любую упавшую команду в фейл шага,
+          # без него `set -e`-семантика не работает поверх heredoc.
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            # Параметры деплоя пробрасываются через ${{ ... }}-подстановку на
+            # стороне GitHub runner: до отправки на сервер скрипт уже содержит
+            # конкретные значения, поэтому отдельный envs-ключ не нужен.
+            DEPLOY_PATH="${{ secrets.DEPLOY_PATH || '/opt/django5_stripe' }}"
+            DEPLOY_BRANCH="${{ github.ref_name }}"
+
+            echo "==> Deploy started at $(date --iso-8601=seconds)"
+            echo "==> Target directory: $DEPLOY_PATH"
+            echo "==> Branch: $DEPLOY_BRANCH"
+
+            cd "$DEPLOY_PATH"
+
+            echo "==> Fetching latest code"
+            git fetch --all --prune
+            git reset --hard "origin/$DEPLOY_BRANCH"
+
+            echo "==> Rebuilding application image and restarting stack"
+            # `docker compose up -d --build` пересобирает образ только если
+            # изменились слои Dockerfile или контекст сборки, иначе просто
+            # запускает обновленный compose-файл.
+            docker compose -f docker-compose.yml up -d --build --remove-orphans
+
+            echo "==> Pruning dangling images to keep disk usage in check"
+            docker image prune -f
+
+            echo "==> Waiting for application to become healthy"
+            # Health-check эндпоинт /health/ проверяет и приложение, и БД.
+            # До 30 попыток с интервалом 2с — обычно укладываемся в 6-8 попыток.
+            #
+            # Заголовок `X-Forwarded-Proto: https` обязателен: production-настройки
+            # включают `SECURE_SSL_REDIRECT=True`, и без него Django вернет 301
+            # на https://127.0.0.1, на которое внутри сервера никто не слушает.
+            for attempt in $(seq 1 30); do
+              if curl --fail --silent --max-time 5 \
+                   -H 'X-Forwarded-Proto: https' \
+                   "http://127.0.0.1:8000/health/" >/dev/null; then
+                echo "==> Health-check passed on attempt $attempt"
+                exit 0
+              fi
+              echo "    health-check attempt $attempt failed, retrying..."
+              sleep 2
+            done
+
+            echo "==> Health-check FAILED after 30 attempts"
+            echo "==> docker compose logs (last 100 lines):"
+            docker compose -f docker-compose.yml logs --tail=100 web || true
+            exit 1

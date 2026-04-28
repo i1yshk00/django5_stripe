@@ -88,6 +88,7 @@ jobs:
             # содержит конкретные значения, поэтому отдельный envs-ключ не нужен.
             DEPLOY_PATH="${{ secrets.DEPLOY_PATH || '/opt/django5_stripe' }}"
             DEPLOY_BRANCH="${{ github.ref_name }}"
+            COMPOSE_FILE="docker-compose.yml"
 
             echo "==> Deploy started at $(date --iso-8601=seconds)"
             echo "==> Target directory: $DEPLOY_PATH"
@@ -95,38 +96,126 @@ jobs:
 
             cd "$DEPLOY_PATH"
 
+            # ────────────────────────────────────────────────────────────
+            # Pre-deploy snapshot.
+            # Сохраняем SHA текущего успешно работающего коммита, чтобы
+            # при провале нового деплоя можно было вернуться к нему.
+            # ────────────────────────────────────────────────────────────
+            PREVIOUS_SHA="$(git rev-parse HEAD)"
+            echo "==> Previous deployed SHA: $PREVIOUS_SHA"
+
+            # ────────────────────────────────────────────────────────────
+            # Helper: богатая диагностика. Дергается перед exit 1, чтобы в
+            # логе GitHub Actions сразу было видно "что упало" — без SSH-сессии.
+            # ────────────────────────────────────────────────────────────
+            collect_diagnostics() {
+              echo
+              echo "==> ===== DIAGNOSTICS ====="
+              echo "==> docker compose ps:"
+              docker compose -f "$COMPOSE_FILE" ps || true
+              echo
+              echo "==> docker compose logs db (last 50 lines):"
+              docker compose -f "$COMPOSE_FILE" logs --tail=50 db || true
+              echo
+              echo "==> docker compose logs web (last 100 lines):"
+              docker compose -f "$COMPOSE_FILE" logs --tail=100 web || true
+              echo
+              echo "==> Probing health endpoint with verbose curl:"
+              curl -v --max-time 5 -H 'X-Forwarded-Proto: https' \
+                   "http://127.0.0.1:8000/health/" 2>&1 || true
+              echo "==> ===== END DIAGNOSTICS ====="
+            }
+
+            # ────────────────────────────────────────────────────────────
+            # Helper: проверка health-check с retry. Возвращает 0 при success.
+            # ────────────────────────────────────────────────────────────
+            wait_for_healthy() {
+              local label="$1"
+              echo "==> Waiting for application to become healthy ($label)"
+              for attempt in $(seq 1 30); do
+                if curl --fail --silent --max-time 5 \
+                     -H 'X-Forwarded-Proto: https' \
+                     "http://127.0.0.1:8000/health/" >/dev/null; then
+                  echo "==> Health-check passed on attempt $attempt ($label)"
+                  return 0
+                fi
+                echo "    health-check attempt $attempt failed, retrying..."
+                sleep 2
+              done
+              return 1
+            }
+
+            # ────────────────────────────────────────────────────────────
+            # Helper: rollback к предыдущему SHA + пересборка контейнеров.
+            # Никогда не трогает Postgres-volume — `docker compose up -d` без
+            # --volumes и без `down -v` сохраняет данные.
+            # ────────────────────────────────────────────────────────────
+            rollback_to_previous_sha() {
+              echo
+              echo "==> ROLLBACK: returning to $PREVIOUS_SHA"
+              git reset --hard "$PREVIOUS_SHA"
+              docker compose -f "$COMPOSE_FILE" up -d --build --remove-orphans
+
+              if wait_for_healthy "after rollback"; then
+                echo "==> Rollback succeeded — server is back on $PREVIOUS_SHA"
+                return 0
+              fi
+
+              echo "==> ROLLBACK ALSO FAILED — server is in broken state"
+              return 1
+            }
+
+            # ────────────────────────────────────────────────────────────
+            # Основной деплой.
+            # ────────────────────────────────────────────────────────────
             echo "==> Fetching latest code"
             git fetch --all --prune
             git reset --hard "origin/$DEPLOY_BRANCH"
 
+            NEW_SHA="$(git rev-parse HEAD)"
+            echo "==> New SHA: $NEW_SHA"
+
+            if [[ "$NEW_SHA" == "$PREVIOUS_SHA" ]]; then
+              echo "==> No new commits — nothing to deploy."
+              exit 0
+            fi
+
             echo "==> Rebuilding application image and restarting stack"
             # `docker compose up -d --build` пересобирает образ только если
-            # изменились слои Dockerfile или контекст сборки, иначе просто
-            # запускает обновленный compose-файл.
-            docker compose -f docker-compose.yml up -d --build --remove-orphans
+            # изменились слои Dockerfile или контекст сборки. Volumes БД
+            # сохраняются — `--remove-orphans` снимает только лишние сервисы.
+            docker compose -f "$COMPOSE_FILE" up -d --build --remove-orphans
 
             echo "==> Pruning dangling images to keep disk usage in check"
             docker image prune -f
 
-            echo "==> Waiting for application to become healthy"
-            # Health-check эндпоинт /health/ проверяет и приложение, и БД.
-            # До 30 попыток с интервалом 2с — обычно укладываемся в 6-8 попыток.
-            #
-            # Заголовок `X-Forwarded-Proto: https` обязателен: production-настройки
-            # включают `SECURE_SSL_REDIRECT=True`, и без него Django вернет 301
-            # на https://127.0.0.1, на которое внутри сервера никто не слушает.
-            for attempt in $(seq 1 30); do
-              if curl --fail --silent --max-time 5 \
-                   -H 'X-Forwarded-Proto: https' \
-                   "http://127.0.0.1:8000/health/" >/dev/null; then
-                echo "==> Health-check passed on attempt $attempt"
-                exit 0
-              fi
-              echo "    health-check attempt $attempt failed, retrying..."
-              sleep 2
-            done
+            if wait_for_healthy "after deploy"; then
+              echo "==> Deploy successful: $NEW_SHA is live."
+              exit 0
+            fi
 
-            echo "==> Health-check FAILED after 30 attempts"
-            echo "==> docker compose logs (last 100 lines):"
-            docker compose -f docker-compose.yml logs --tail=100 web || true
+            # ────────────────────────────────────────────────────────────
+            # Деплой провалил health-check — собираем диагностику и
+            # пробуем откатиться на предыдущий рабочий SHA.
+            # ────────────────────────────────────────────────────────────
+            echo
+            echo "==> Health-check FAILED for new SHA $NEW_SHA"
+            collect_diagnostics
+
+            if rollback_to_previous_sha; then
+              # Сервер жив на старом коммите — деплой провалился, но прод не лежит.
+              # Workflow все равно завершаем с exit 1, чтобы GitHub пометил run
+              # красным и человек увидел, что новые изменения не выкатились.
+              echo
+              echo "==> Server is operational on previous SHA $PREVIOUS_SHA."
+              echo "==> Investigate diagnostics above before re-deploying."
+              exit 1
+            fi
+
+            # И rollback не помог: server в broken-состоянии. Это значит, что
+            # либо проблема не в коде ($PREVIOUS_SHA тоже падает), либо что-то
+            # сломалось на инфра-уровне (DB-volume, .env, диск).
+            echo
+            echo "==> Final state: server is DOWN. Manual intervention required."
+            collect_diagnostics
             exit 1

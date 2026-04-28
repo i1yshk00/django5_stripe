@@ -24,8 +24,16 @@ DEPLOY_PATH="${DEPLOY_PATH:-/opt/django5_stripe}"
 REPO_URL="${REPO_URL:-}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 
+# REPO_URL обязателен, только если в DEPLOY_PATH ещё нет git-клона. Если
+# скрипт запущен из уже существующего клона (например, `cd /opt/django5_stripe
+# && bash scripts/server-bootstrap.sh`), URL автоматически берётся из
+# `git remote get-url origin` — не нужно дублировать его в env.
+if [[ -z "$REPO_URL" && -d "$DEPLOY_PATH/.git" ]]; then
+    REPO_URL="$(git -C "$DEPLOY_PATH" remote get-url origin 2>/dev/null || true)"
+fi
+
 if [[ -z "$REPO_URL" ]]; then
-    echo "ERROR: переменная REPO_URL не задана."
+    echo "ERROR: переменная REPO_URL не задана и в $DEPLOY_PATH нет git-клона."
     echo "Пример запуска:"
     echo "  REPO_URL=https://github.com/<owner>/<repo>.git bash server-bootstrap.sh"
     exit 1

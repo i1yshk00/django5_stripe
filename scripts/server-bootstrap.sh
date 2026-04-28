@@ -118,6 +118,8 @@ fi
 # ──────────────────────────────────────────────────────────────────────────
 
 ENV_FILE="$DEPLOY_PATH/.env"
+ENV_HAD_PLACEHOLDERS=0
+
 if [[ ! -f "$ENV_FILE" ]]; then
     echo "==> Creating placeholder .env at $ENV_FILE"
     cat >"$ENV_FILE" <<'ENV_EOF'
@@ -139,27 +141,47 @@ STRIPE_WEBHOOK_SECRET=whsec_REAL_WEBHOOK_SIGNING_SECRET
 STRIPE_API_VERSION=2026-02-25.clover
 ENV_EOF
     chmod 600 "$ENV_FILE"
-    echo "    -> отредактируйте $ENV_FILE и проставьте реальные значения"
+    ENV_HAD_PLACEHOLDERS=1
+    echo "    -> $ENV_FILE создан с PLACEHOLDER-значениями"
 else
     echo "==> .env уже существует, оставляем как есть"
 fi
 
 # ──────────────────────────────────────────────────────────────────────────
-# 6. Поднимаем сервис в первый раз, чтобы убедиться, что compose работает.
+# 6. Поднимаем сервис только если в .env реальные секреты.
+#
+# Если .env только что создан с PLACEHOLDER-значениями, docker compose НЕ
+# запускается автоматически. Иначе Postgres инициализирует volume с
+# placeholder-паролем, и после правки .env пароль не совпадет — придется
+# вручную пересоздавать volume. Чтобы избежать этой ловушки, оставляем
+# финальный `up -d` пользователю — после ручной правки .env.
 # ──────────────────────────────────────────────────────────────────────────
 
-echo "==> Building and starting docker compose stack"
-cd "$DEPLOY_PATH"
-docker compose -f docker-compose.yml up -d --build --remove-orphans
+if [[ "$ENV_HAD_PLACEHOLDERS" -eq 1 ]]; then
+    echo
+    echo "==> Bootstrap почти готов, но docker compose НЕ запущен."
+    echo "    Причина: .env только что создан с PLACEHOLDER-значениями."
+    echo "    Если запустить compose сейчас, Postgres зафиксирует"
+    echo "    placeholder-пароль внутри volume, и после правки .env"
+    echo "    придется пересоздавать том вручную (docker volume rm ...)."
+    echo
+    echo "Дальнейшие шаги:"
+    echo "  1. Отредактируйте $ENV_FILE и проставьте реальные секреты:"
+    echo "       nano $ENV_FILE"
+    echo "  2. Запустите stack:"
+    echo "       cd $DEPLOY_PATH && docker compose -f docker-compose.yml up -d --build"
+    echo "  3. В GitHub repository → Settings → Secrets установите:"
+    echo "       SSH_HOST=46.173.17.207"
+    echo "       SSH_USER=root"
+    echo "       SSH_PRIVATE_KEY=<содержимое ~/.ssh/github-deploy>"
+    echo "  4. Push в main — workflow CD автоматически выкатит обновление."
+else
+    echo "==> Building and starting docker compose stack"
+    cd "$DEPLOY_PATH"
+    docker compose -f docker-compose.yml up -d --build --remove-orphans
 
-echo
-echo "==> Bootstrap complete."
-echo "Дальнейшие шаги:"
-echo "  1. Отредактируйте $ENV_FILE и проставьте реальные секреты."
-echo "  2. Перезапустите контейнер: docker compose -f $DEPLOY_PATH/docker-compose.yml up -d"
-echo "  3. В GitHub repository → Settings → Secrets установите:"
-echo "       SSH_HOST=46.173.17.207"
-echo "       SSH_USER=root"
-echo "       SSH_PRIVATE_KEY=<содержимое ~/.ssh/id_ed25519 GitHub-deploy-ключа>"
-echo "       (опционально) DEPLOY_PATH=$DEPLOY_PATH"
-echo "  4. Push в main — workflow CD автоматически выкатит обновление."
+    echo
+    echo "==> Bootstrap complete."
+    echo "Если еще не настроены GitHub Secrets — добавьте:"
+    echo "  SSH_HOST=46.173.17.207, SSH_USER=root, SSH_PRIVATE_KEY=..."
+fi

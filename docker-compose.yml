@@ -34,8 +34,13 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # Web-контейнер слушает только на host-loopback. Снаружи (из интернета)
+    # 8000 порт недоступен — публичный трафик ходит через Caddy на 80/443.
+    # Loopback-binding нужен для:
+    #   - CD healthcheck-curl изнутри сервера;
+    #   - локальной диагностики через `curl 127.0.0.1:8000`.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     healthcheck:
       # Проверяем именно прикладной `/health/`, а не только факт прослушивания порта.
       # В `prod` Django принудительно считает HTTPS обязательным, поэтому для
@@ -51,8 +56,8 @@ services:
       DJANGO_ENV: prod
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-django-insecure-local-dev-only-change-me}
       DJANGO_DEBUG: "False"
-      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS_PROD:-localhost,127.0.0.1,0.0.0.0}
-      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS_PROD:-https://localhost:8000,https://127.0.0.1:8000}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS_PROD:-46-173-17-207.sslip.io}
+      DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS_PROD:-https://46-173-17-207.sslip.io}
       DJANGO_USE_POSTGRES: "true"
       DJANGO_DB_CONN_MAX_AGE: ${DJANGO_DB_CONN_MAX_AGE:-60}
       DJANGO_LOG_LEVEL: ${DJANGO_LOG_LEVEL:-INFO}
@@ -67,7 +72,34 @@ services:
       STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-pk_test_change_me}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-whsec_change_me}
       STRIPE_API_VERSION: ${STRIPE_API_VERSION:-2026-02-25.clover}
-      DOMAIN_URL: ${DOMAIN_URL_PROD:-https://localhost:8000}
+      DOMAIN_URL: ${DOMAIN_URL_PROD:-https://46-173-17-207.sslip.io}
+
+  caddy:
+    # Reverse-proxy с автоматическим Let's Encrypt TLS. Слушает 80 и 443,
+    # проксирует на сервис `web`. Сертификаты хранятся в volume `caddy_data` —
+    # они переживают пересборки контейнера и не запрашиваются заново.
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - web
+    ports:
+      - "80:80"
+      - "443:443"
+      # HTTP/3 (QUIC) — необязательно, но Caddy умеет, и это бесплатно.
+      - "443:443/udp"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      # Домен, на который Caddy выпускает сертификат. Должен быть DNS-A-записью,
+      # указывающей на этот сервер. Дефолт `46-173-17-207.sslip.io` —
+      # автоматический wildcard сервиса sslip.io: `<dashed-ip>.sslip.io`
+      # резолвится в IP без регистрации. При появлении реального домена
+      # просто переопределите CADDY_DOMAIN в `.env`.
+      CADDY_DOMAIN: ${CADDY_DOMAIN:-46-173-17-207.sslip.io}
 
 volumes:
   postgres_data:
+  caddy_data:
+  caddy_config:

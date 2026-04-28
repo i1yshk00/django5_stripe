@@ -127,9 +127,16 @@ if [[ ! -f "$ENV_FILE" ]]; then
 DJANGO_ENV=prod
 DJANGO_SECRET_KEY=PLEASE_CHANGE_TO_LONG_RANDOM_STRING
 DJANGO_DEBUG=False
-DJANGO_ALLOWED_HOSTS_PROD=your-domain.example,46.173.17.207
-DJANGO_CSRF_TRUSTED_ORIGINS_PROD=https://your-domain.example
-DOMAIN_URL_PROD=https://your-domain.example
+
+# Caddy reverse-proxy будет получать Let's Encrypt сертификат на этот домен.
+# Если своего домена нет — используйте sslip.io вида `46-173-17-207.sslip.io`,
+# он резолвится в IP без регистрации.
+CADDY_DOMAIN=46-173-17-207.sslip.io
+
+# Публичный домен и origin-список Django должны совпадать с CADDY_DOMAIN.
+DJANGO_ALLOWED_HOSTS_PROD=46-173-17-207.sslip.io
+DJANGO_CSRF_TRUSTED_ORIGINS_PROD=https://46-173-17-207.sslip.io
+DOMAIN_URL_PROD=https://46-173-17-207.sslip.io
 
 POSTGRES_DB=django5_stripe
 POSTGRES_USER=django5_stripe

@@ -1,0 +1,35 @@
+# Caddy reverse proxy с автоматическим TLS через Let's Encrypt.
+#
+# Что делает:
+# - на порту 80 принимает HTTP и автоматически редиректит на HTTPS;
+# - на порту 443 терминирует TLS, получая и обновляя сертификат сам;
+# - проксирует все запросы на сервис `web` (Django+gunicorn) на порту 8000;
+# - добавляет `X-Forwarded-Proto: https` (Caddy делает это по умолчанию для
+#   reverse_proxy), что важно для Django prod-настроек: он смотрит этот
+#   заголовок через `SECURE_PROXY_SSL_HEADER` и считает запрос HTTPS-овым.
+#
+# `{$CADDY_DOMAIN}` подставляется из переменной окружения. Если в `.env`
+# написать `CADDY_DOMAIN=46-173-17-207.sslip.io`, Caddy получит сертификат
+# именно на этот hostname. sslip.io резолвится в IP сразу, регистрация не
+# нужна — удобно для тестового стенда.
+#
+# Когда будет реальный домен — заменить значение CADDY_DOMAIN, и Caddy сам
+# выпишет новый сертификат при следующем рестарте.
+
+{$CADDY_DOMAIN} {
+	# Жмем ответы — пригождается для статики WhiteNoise и JSON-ответов API.
+	encode zstd gzip
+
+	# Прокси на Django. Caddy сам добавляет:
+	#   X-Forwarded-For, X-Forwarded-Proto, X-Forwarded-Host.
+	# Django prod-настройки уже доверяют X-Forwarded-Proto, поэтому
+	# `SECURE_SSL_REDIRECT=True` корректно работает за этим прокси.
+	reverse_proxy web:8000
+
+	# Логи в stdout — прочитываются через `docker compose logs caddy`.
+	log {
+		output stdout
+		format console
+		level INFO
+	}
+}

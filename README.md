@@ -14,16 +14,19 @@
 
 ## Демо-стенд
 
-> Сюда нужно подставить реальный URL после деплоя на Fly.io / Render / Railway.
+Production-стенд развернут на VPS `46.173.17.207`. Публичный домен —
+`46-173-17-207.sslip.io` (через сервис sslip.io, который автоматически
+резолвится в IP без регистрации DNS). Caddy выпускает Let's Encrypt
+сертификат и проксирует HTTPS-трафик на Django.
 
-- Главная: `https://<your-domain>/`
-- Админка: `https://<your-domain>/admin/`
+- Главная: https://46-173-17-207.sslip.io/
+- Админка: https://46-173-17-207.sslip.io/admin/
   Логин/пароль: `admin / admin12345` (создается миграцией
   [0002_create_default_admin_user.py](api/migrations/0002_create_default_admin_user.py)).
-- Swagger UI: `https://<your-domain>/api/docs/`
-- Redoc: `https://<your-domain>/api/redoc/`
-- OpenAPI schema (JSON): `https://<your-domain>/api/schema/`
-- Health-check: `https://<your-domain>/health/`
+- Swagger UI: https://46-173-17-207.sslip.io/api/docs/
+- Redoc: https://46-173-17-207.sslip.io/api/redoc/
+- OpenAPI schema (JSON): https://46-173-17-207.sslip.io/api/schema/
+- Health-check: https://46-173-17-207.sslip.io/health/
 
 ## API-документация
 
@@ -198,6 +201,68 @@ Webhook endpoint:
 - защищен от replay через журнал `ProcessedStripeEvent`: повторная доставка
   того же `event.id` молча игнорируется и не сдвигает повторно `paid_at`
   или статусы заказов.
+
+## TLS/HTTPS через Caddy + Let's Encrypt
+
+В `docker-compose.yml` есть отдельный сервис `caddy` ([caddy/Caddyfile](caddy/Caddyfile)),
+который слушает 80/443, автоматически получает и обновляет Let's Encrypt
+сертификат и проксирует на сервис `web` (Django+gunicorn) на 8000. Web-контейнер
+больше не публикует порт наружу — только `127.0.0.1:8000` для healthcheck CD.
+
+### Шаги
+
+1. **Указать домен.** Let's Encrypt не выдаёт сертификаты на голый IP, нужен
+   DNS-A-запись на сервер. Если своего домена нет, проще всего использовать
+   `sslip.io`: домен вида `46-173-17-207.sslip.io` автоматически резолвится в
+   IP `46.173.17.207` без регистрации. На сервере отредактируйте `.env`:
+
+   ```env
+   CADDY_DOMAIN=46-173-17-207.sslip.io
+   DJANGO_ALLOWED_HOSTS_PROD=46-173-17-207.sslip.io
+   DJANGO_CSRF_TRUSTED_ORIGINS_PROD=https://46-173-17-207.sslip.io
+   DOMAIN_URL_PROD=https://46-173-17-207.sslip.io
+   ```
+
+2. **Открыть 80 и 443 на firewall** (bootstrap-скрипт уже это делает):
+
+   ```bash
+   ufw allow 80/tcp
+   ufw allow 443/tcp
+   ```
+
+3. **Перезапустить compose:**
+
+   ```bash
+   cd /opt/django5_stripe
+   docker compose -f docker-compose.yml up -d --build
+   ```
+
+   В логах `docker compose logs caddy` будет видно, как Caddy запрашивает и
+   получает сертификат у Let's Encrypt (challenge ACME-HTTP-01).
+
+4. **Проверить:**
+
+   ```bash
+   curl -I https://46-173-17-207.sslip.io/health/
+   # HTTP/2 200
+   # server: Caddy
+   ```
+
+   В браузере домен открывается с зелёным замочком, без warning.
+
+### Когда появится свой домен
+
+Просто заменить значение `CADDY_DOMAIN` в `.env`, обновить `DJANGO_ALLOWED_HOSTS_PROD`,
+`DJANGO_CSRF_TRUSTED_ORIGINS_PROD`, `DOMAIN_URL_PROD` и сделать
+`docker compose up -d` — Caddy автоматически выпустит новый сертификат на
+новый домен. Старые сертификаты остаются в volume `caddy_data`.
+
+### Stripe webhook на TLS-домене
+
+После настройки HTTPS в Stripe Dashboard замените URL webhook'а на
+`https://46-173-17-207.sslip.io/stripe/webhook/` — Stripe не принимает голые
+HTTP в live mode, а в test mode тоже желательно использовать HTTPS, чтобы
+поведение совпадало с production.
 
 ## CI
 
